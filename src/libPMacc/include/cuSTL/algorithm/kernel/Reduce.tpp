@@ -29,6 +29,7 @@
 #include "cuSTL/zone/SphericZone.hpp"
 #include <boost/type_traits/remove_reference.hpp>
 #include <cuSTL/cursor/navigator/EmptyNavigator.hpp>
+#include <nvidia/reduce/Reduce.hpp>
 
 namespace PMacc
 {
@@ -36,124 +37,74 @@ namespace algorithm
 {
 namespace kernel
 {
-
+    
 namespace detail
 {
-
-template<typename BlockDim, int dim>
-struct ReduceKernel
+    
+template<int T_dim>
+class MappedNavigator
 {
-    typedef void result_type;
-    int width;
-
+public:
+    static const int dim = T_dim;
+private:
+    math::Size_t<dim> shape;
+    math::Size_t<dim-1> pitch;
+    int pos;
+public:
     HDINLINE
-    ReduceKernel() {};
-
+    MappedNavigator(math::Size_t<dim> shape, math::Size_t<dim-1> pitch) 
+     : shape(shape), pitch(pitch), pos(0) {}
+     
+    
     HDINLINE
-    ReduceKernel(int width)
-     : width(width) {}
-
-    template<typename TCursor, typename Data, typename Functor>
-    DINLINE void operator()(const TCursor& resultPerBlock, const Data& data, const Functor& functor) const
+    math::Int<dim> toNdim(int idx) const
     {
-        if(dim == 1)
-            if(blockIdx.x * BlockDim::x::value + threadIdx.x >= width) return;
-
-        using namespace math;
-        container::CT::SharedBuffer<Data, CT::Int<CT::volume<BlockDim>::type::value> > shBuffer;
-        BOOST_AUTO(sh, shBuffer.origin());
-        int linearThreadIdx = threadIdx.z * BlockDim::x::value * BlockDim::y::value +
-                              threadIdx.y * BlockDim::x::value + threadIdx.x;
-
-        sh[linearThreadIdx] = data;
-        int numThreads;
-        __shared__ bool odd;
-        if(dim == 1 && blockIdx.x == (gridDim.x-1))
+        math::Int<dim> result;
+        int volume = 1;
+        for(int i = 0; i < dim; i++)
         {
-            numThreads = width % BlockDim::x::value;
-            if(numThreads == 0) numThreads = BlockDim::x::value;
-            odd = numThreads % 2;
+            result[i] = (idx / volume) % this->shape[i];
+            volume *= this->shape[i];
         }
-        else
-            numThreads = CT::volume<BlockDim>::type::value;
-
-        numThreads /= 2;
-        while(numThreads > 0)
-        {
-            if(linearThreadIdx >= numThreads) return;
-            __syncthreads(); //\todo: durch gescheitere __syncthreads funktionen ersetzen
-            Data tmp = functor(sh[2*linearThreadIdx], sh[2*linearThreadIdx+1]);
-            if((dim == 1) && (blockIdx.x == (gridDim.x-1)) && (threadIdx.x == (numThreads-1)) && odd)
-                tmp = functor(tmp, sh[2*linearThreadIdx+2]);
-
-            __syncthreads();
-            sh[linearThreadIdx] = tmp;
-
-            if(dim == 1 && blockIdx.x == (gridDim.x-1) && threadIdx.x == (numThreads-1))
-                odd = numThreads % 2;
-            numThreads /= 2;
-        }
-        if(linearThreadIdx != 0) return;
-        resultPerBlock[int(blockIdx.y * gridDim.x + blockIdx.x)] = *sh;
+        return result;
     }
+
+    template<typename Data>
+    HDINLINE
+    Data operator()(const Data& data, math::Int<1> jump)
+    {
+        math::Int<dim> ndstart = toNdim(this->pos);
+        this->pos += jump.x();
+        math::Int<dim> ndend = toNdim(this->pos);
+        
+        math::Int<dim> ndjump = ndend - ndstart;
+        
+        char* result = (char*)data;
+        result += ndjump[0] * sizeof(typename boost::remove_pointer<Data>::type);
+        for(int i = 1; i < dim; i++)
+        {
+            result += ndjump[i] * this->pitch[i-1];
+        }
+        return (Data)result;
+    }
+
 };
+    
+} // detail
 
-}
-
-template<typename BlockDim>
-template<typename DestCursor, typename Zone, typename SrcCursor, typename Functor>
-void Reduce<BlockDim>::operator()(const DestCursor& destCursor, const Zone& p_zone, const SrcCursor& srcCursor, const Functor& functor)
+template<typename SrcCursor, typename Zone, typename NVidiaFunctor>
+typename SrcCursor::ValueType Reduce::operator()(const SrcCursor& srcCursor, const Zone& p_zone, const NVidiaFunctor& functor)
 {
-    typedef typename boost::remove_reference<typename DestCursor::type>::type type;
-
-    BOOST_AUTO(_destCursor, cursor::make_Cursor(destCursor.getAccessor(),
-                                                cursor::EmptyNavigator(),
-                                                destCursor.getMarker()));
-    container::DeviceBuffer<type, 1>* partialSum[2];
-    partialSum[0] = new container::DeviceBuffer<type, 1>
-        (p_zone.size.productOfComponents() / BlockDim().toRT().productOfComponents());
-    partialSum[1] = new container::DeviceBuffer<type, 1>(partialSum[0]->size());
-    int curDestBuffer = 0;
-    int partialSumSize = partialSum[curDestBuffer]->size().x();
-
-    using namespace lambda;
-
-    if(partialSumSize == 1)
-    {
-        Foreach<BlockDim>()(p_zone, srcCursor,
-            expr(detail::ReduceKernel<BlockDim, Zone::dim>(p_zone.size.x()))
-                (_destCursor, _1, make_Functor(functor)));
-
-    }
-    else
-    {
-        Foreach<BlockDim>()(p_zone, srcCursor,
-            expr(detail::ReduceKernel<BlockDim, Zone::dim>(p_zone.size.x()))
-                (partialSum[curDestBuffer]->origin(), _1, make_Functor(functor)));
-    }
-
-    while(partialSumSize > 1)
-    {
-        int numBlocks = ceil((float)partialSumSize / 512.0f);
-        zone::SphericZone<1> p_zone1D = zone::SphericZone<1>(math::Size_t<1>((size_t)(numBlocks*512)));
-        curDestBuffer ^= 1;
-        if(numBlocks == 1)
-        {
-            Foreach<math::CT::Int<512,1,1> >()(p_zone1D, partialSum[(curDestBuffer+1)%2]->origin(),
-                            expr(detail::ReduceKernel<math::CT::Int<512,1,1>, 1>(partialSumSize))
-                            (_destCursor, _1, make_Functor(functor)));
-        }
-        else
-        {
-            Foreach<math::CT::Int<512,1,1> >()(p_zone1D, partialSum[(curDestBuffer+1)%2]->origin(),
-                            expr(detail::ReduceKernel<math::CT::Int<512,1,1>, 1>(partialSumSize))
-                            (partialSum[curDestBuffer]->origin(), _1, make_Functor(functor)));
-        }
-        partialSumSize = numBlocks;
-    }
-
-    delete partialSum[0];
-    delete partialSum[1];
+    SrcCursor srcCursor_shifted = srcCursor(p_zone.offset);
+    
+    detail::MappedNavigator<Zone::dim> myNavi(p_zone.size, srcCursor_shifted.getNavigator().getPitch());
+    
+    BOOST_AUTO(_srcCursor, cursor::make_Cursor(srcCursor_shifted.getAccessor(),
+                                               myNavi,
+                                               srcCursor_shifted.getMarker()));
+    
+    PMacc::nvidia::reduce::Reduce reduce(1024);
+    return reduce(functor, _srcCursor, p_zone.size.productOfComponents());
 }
 
 } // kernel
