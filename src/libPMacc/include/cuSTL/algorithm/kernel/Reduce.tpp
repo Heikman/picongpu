@@ -28,7 +28,7 @@
 #include "cuSTL/cursor/NestedCursor.hpp"
 #include "cuSTL/zone/SphericZone.hpp"
 #include <boost/type_traits/remove_reference.hpp>
-#include <cuSTL/cursor/navigator/EmptyNavigator.hpp>
+#include <cuSTL/cursor/accessor/CursorAccessor.hpp>
 #include <nvidia/reduce/Reduce.hpp>
 
 namespace PMacc
@@ -41,6 +41,13 @@ namespace kernel
 namespace detail
 {
     
+/**
+ * @class MappedNavigator
+ * @author Heiko Burau 
+ * @date 30/06/15
+ * @file Reduce.tpp
+ * @brief Wraps a ndim-cursor into a 1D-cursor
+ */
 template<int T_dim>
 class MappedNavigator
 {
@@ -48,12 +55,11 @@ public:
     static const int dim = T_dim;
 private:
     math::Size_t<dim> shape;
-    math::Size_t<dim-1> pitch;
     int pos;
 public:
     HDINLINE
-    MappedNavigator(math::Size_t<dim> shape, math::Size_t<dim-1> pitch) 
-     : shape(shape), pitch(pitch), pos(0) {}
+    MappedNavigator(math::Size_t<dim> shape) 
+     : shape(shape), pos(0) {}
      
     
     HDINLINE
@@ -69,9 +75,9 @@ public:
         return result;
     }
 
-    template<typename Data>
+    template<typename Cursor>
     HDINLINE
-    Data operator()(const Data& data, math::Int<1> jump)
+    Cursor operator()(const Cursor& cursor, math::Int<1> jump)
     {
         math::Int<dim> ndstart = toNdim(this->pos);
         this->pos += jump.x();
@@ -79,13 +85,7 @@ public:
         
         math::Int<dim> ndjump = ndend - ndstart;
         
-        char* result = (char*)data;
-        result += ndjump[0] * sizeof(typename boost::remove_pointer<Data>::type);
-        for(int i = 1; i < dim; i++)
-        {
-            result += ndjump[i] * this->pitch[i-1];
-        }
-        return (Data)result;
+        return cursor(ndjump);
     }
 
 };
@@ -97,11 +97,11 @@ typename SrcCursor::ValueType Reduce::operator()(const SrcCursor& srcCursor, con
 {
     SrcCursor srcCursor_shifted = srcCursor(p_zone.offset);
     
-    detail::MappedNavigator<Zone::dim> myNavi(p_zone.size, srcCursor_shifted.getNavigator().getPitch());
+    detail::MappedNavigator<Zone::dim> myNavi(p_zone.size);
     
-    BOOST_AUTO(_srcCursor, cursor::make_Cursor(srcCursor_shifted.getAccessor(),
+    BOOST_AUTO(_srcCursor, cursor::make_Cursor(cursor::CursorAccessor<SrcCursor>(),
                                                myNavi,
-                                               srcCursor_shifted.getMarker()));
+                                               srcCursor_shifted));
     
     PMacc::nvidia::reduce::Reduce reduce(1024);
     return reduce(functor, _srcCursor, p_zone.size.productOfComponents());
