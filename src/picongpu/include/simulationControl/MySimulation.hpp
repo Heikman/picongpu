@@ -49,6 +49,7 @@
 #include "fields/background/cellwiseOperation.hpp"
 #include "initialization/IInitPlugin.hpp"
 #include "initialization/ParserGridDistribution.hpp"
+#include "particles/synchrotronPhotons/SynchrotronFunctions.hpp"
 
 #include "nvidia/reduce/Reduce.hpp"
 #include "memory/boxes/DataBoxDim1Access.hpp"
@@ -332,6 +333,9 @@ public:
 
         /* add CUDA streams to the StreamController for concurrent execution */
         Environment<>::get().StreamController().addStreams(6);
+
+        // Initialize synchrotron functions
+        this->synchrotronFunctions.init();
     }
 
     virtual uint32_t fillSimulation()
@@ -427,6 +431,16 @@ public:
         >::type VectorSpeciesWithIonizer;
         ForEach<VectorSpeciesWithIonizer, particles::CallIonization<bmpl::_1>, MakeIdentifier<bmpl::_1> > particleIonization;
         particleIonization(forward(particleStorage), cellDescription, currentStep);
+
+        /* SynchrotronPhotons */
+        typedef typename PMacc::particles::traits::FilterByFlag<VectorAllSpecies,
+                                                                synchrotronPhotons<> >::type AllSynchrotronPhotonsSpecies;
+
+        ForEach<AllSynchrotronPhotonsSpecies,
+                particles::CallSynchrotronPhotons<bmpl::_1>,
+                MakeIdentifier<bmpl::_1> > electronSynchrotronPhotons;
+        electronSynchrotronPhotons(forward(particleStorage), cellDescription, currentStep, this->synchrotronFunctions);
+
 
         EventTask initEvent = __getTransactionEvent();
         EventTask updateEvent;
@@ -637,6 +651,9 @@ protected:
     ParticleStorage particleStorage;
 
     LaserPhysics *laser;
+
+    // Synchrotron functions (used in synchrotronPhotons module)
+    particles::synchrotronPhotons::SynchrotronFunctions synchrotronFunctions;
 
     // output classes
 

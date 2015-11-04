@@ -1,5 +1,5 @@
 /**
- * Copyright 2014-2016 Rene Widera, Marco Garten
+ * Copyright 2014-2016 Rene Widera, Marco Garten, Heiko Burau
  *
  * This file is part of PIConGPU.
  *
@@ -82,6 +82,9 @@ alias(ionizer);
 
 /*! alias for ionization energy container @see ionizationEnergies.param */
 alias(ionizationEnergies);
+
+/*! alias for synchrotronPhotons @see speciesDefinition.param */
+alias(synchrotronPhotons)
 
 /*! alias for particle to field interpolation @see species.param */
 alias(interpolation);

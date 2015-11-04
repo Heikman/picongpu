@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include "simulation_defines/unitless/synchrotronPhotons.unitless"
+
 #include "types.h"
 #include "cuSTL/container/HostBuffer.hpp"
 #include "cuSTL/container/HostBuffer.hpp"
@@ -37,7 +39,7 @@ namespace picongpu
 {
 namespace particles
 {
-namespace bremsstrahlung
+namespace synchrotronPhotons
 {
 
 namespace detail
@@ -197,6 +199,6 @@ public:
 
 }; // class SynchrotronFunctions
 
-} // namespace bremsstrahlung
+} // namespace synchrotronPhotons
 } // namespace particles
 } // namespace picongpu
