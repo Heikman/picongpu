@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include "simulation_defines/unitless/bremsstrahlung.unitless"
+
 #include "types.h"
 #include "cuSTL/container/HostBuffer.hpp"
 #include "cuSTL/container/HostBuffer.hpp"
