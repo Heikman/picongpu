@@ -163,9 +163,9 @@ struct CreateParticlesKernel
              * if the threads contain particles, the particleCreator can ionize them
              * if they are non-particles their inner ionization counter remains at 0
              */
-            if (isParticle)
+            //if (isParticle)
                 /* ionization based on ionization model - this actually increases charge states*/
-                numNewParticles = particleCreator.numNewParticles(*sourceFrame, linearThreadIdx);
+                numNewParticles = particleCreator.numNewParticles(*sourceFrame, linearThreadIdx, blockCell);
 
             __syncthreads();
             /* always true while-loop over all particles inside source frame until each thread breaks out individually

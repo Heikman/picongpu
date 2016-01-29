@@ -20,7 +20,6 @@
 
 #pragma once
 
-#include "simulation_defines.hpp"
 #include "SynchrotronFunctions.hpp"
 #include "algorithms/math/defines/sqrt.hpp"
 #include "algorithms/math/defines/dot.hpp"
@@ -28,6 +27,7 @@
 #include "traits/frame/GetMass.hpp"
 #include "traits/frame/GetCharge.hpp"
 
+/* former CreatorBase includes */
 #include "traits/Resolve.hpp"
 #include "mappings/kernel/AreaMapping.hpp"
 
@@ -36,6 +36,14 @@
 
 #include "compileTime/conversion/TypeToPointerPair.hpp"
 #include "memory/boxes/DataBox.hpp"
+
+/* Cached_F2P_Interp includes */
+#include "traits/GetMargin.hpp"
+#include "dimensions/SuperCellDescription.hpp"
+#include "cuSTL/container/compile-time/SharedBuffer.hpp"
+#include "cuSTL/algorithm/cudaBlock/Foreach.hpp"
+#include "math/vector/Int.hpp"
+#include "lambda/placeholder.h"
 
 // Random number generator
 #include "particles/ionization/ionizationMethods.hpp"
@@ -55,7 +63,7 @@ namespace synchrotronPhotons
 template<typename T_ElectronSpecies, typename T_PhotonSpecies>
 struct PhotonCreator
 {
-    typedef T_ElectronSpecies ElectronSpecies;
+        typedef T_ElectronSpecies ElectronSpecies;
     typedef T_PhotonSpecies PhotonSpecies;
 
     typedef typename ElectronSpecies::FrameType FrameType;
@@ -69,14 +77,12 @@ struct PhotonCreator
     typedef typename GetMargin<Field2ParticleInterpolation>::LowerMargin LowerMargin;
     typedef typename GetMargin<Field2ParticleInterpolation>::UpperMargin UpperMargin;
 
-    /* relevant area of a block */
-    typedef SuperCellDescription<
+    /* super cell size + margins */
+    typedef typename SuperCellDescription<
         typename MappingDesc::SuperCellSize,
         LowerMargin,
         UpperMargin
-        > BlockArea;
-
-    BlockArea BlockDescription;
+        >::FullSuperCellSize FullSuperCellSize;
 
     typedef MappingDesc::SuperCellSize TVec;
 
@@ -84,12 +90,13 @@ struct PhotonCreator
     typedef FieldB::ValueType ValueType_B;
 
 private:
-    /* global memory EM-field device databoxes */
-    PMACC_ALIGN(eBox, FieldE::DataBoxType);
-    PMACC_ALIGN(bBox, FieldB::DataBoxType);
-    /* shared memory EM-field device databoxes */
-    PMACC_ALIGN(cachedE, DataBox<SharedBox<ValueType_E, typename BlockArea::FullSuperCellSize,1> >);
-    PMACC_ALIGN(cachedB, DataBox<SharedBox<ValueType_B, typename BlockArea::FullSuperCellSize,0> >);
+    typedef container::CT::SharedBuffer<ValueType_E, FullSuperCellSize, 0> CachedBufferE;
+    typedef container::CT::SharedBuffer<ValueType_B, FullSuperCellSize, 1> CachedBufferB;
+
+    PMACC_ALIGN(globalFieldE, cursor::BufferCursor<ValueType_E, simDim>);
+    PMACC_ALIGN(globalFieldB, cursor::BufferCursor<ValueType_B, simDim>);
+    PMACC_ALIGN(cachedFieldE, CachedBufferE);
+    PMACC_ALIGN(cachedFieldB, CachedBufferB);
 
     PMACC_ALIGN(curF_1, SynchrotronFunctions::SyncFuncCursor);
     PMACC_ALIGN(curF_2, SynchrotronFunctions::SyncFuncCursor);
@@ -107,15 +114,17 @@ public:
         const SynchrotronFunctions::SyncFuncCursor& curF_1,
         const SynchrotronFunctions::SyncFuncCursor& curF_2,
         const uint32_t currentStep)
-            : curF_1(curF_1), curF_2(curF_2), randomGen(currentStep)
+            : globalFieldE(NULL, PMacc::math::Size_t<simDim-1>::create(0)),
+              globalFieldB(NULL, PMacc::math::Size_t<simDim-1>::create(0)),
+              curF_1(curF_1), curF_2(curF_2), randomGen(currentStep)
     {
         DataConnector &dc = Environment<>::get().DataConnector();
         /* initialize pointers on host-side E-(B-)field databoxes */
         FieldE* fieldE = &(dc.getData<FieldE > (FieldE::getName(), true));
         FieldB* fieldB = &(dc.getData<FieldB > (FieldB::getName(), true));
         /* initialize device-side E-(B-)field databoxes */
-        eBox = fieldE->getDeviceDataBox();
-        bBox = fieldB->getDeviceDataBox();
+        this->globalFieldE = fieldE->getGridBuffer().getDeviceBuffer().cartBuffer().origin();
+        this->globalFieldB = fieldB->getGridBuffer().getDeviceBuffer().cartBuffer().origin();
     }
 
     /** Initialization function on device
@@ -129,30 +138,6 @@ public:
      */
     DINLINE void init(const DataSpace<simDim>& blockCell, const int& linearThreadIdx, const DataSpace<simDim>& localCellOffset)
     {
-        /* caching of E and B fields */
-        cachedB = CachedBox::create < 0, ValueType_B > (BlockArea());
-        cachedE = CachedBox::create < 1, ValueType_E > (BlockArea());
-
-        /* instance of nvidia assignment operator */
-        nvidia::functors::Assign assign;
-        /* copy fields from global to shared */
-        PMACC_AUTO(fieldBBlock, bBox.shift(blockCell));
-        ThreadCollective<BlockArea> collective(linearThreadIdx);
-        collective(
-                  assign,
-                  cachedB,
-                  fieldBBlock
-                  );
-        /* copy fields from global to shared */
-        PMACC_AUTO(fieldEBlock, eBox.shift(blockCell));
-        collective(
-                  assign,
-                  cachedE,
-                  fieldEBlock
-                  );
-
-        /* wait for shared memory to be initialized */
-        __syncthreads();
 
         /* initialize random number generator with the local cell index in the simulation*/
         this->randomGen.init(localCellOffset);
@@ -205,8 +190,36 @@ public:
      * @param localIdx Index of the source particle within frame
      * @return number of particle to be created from each source particle
      */
-    DINLINE unsigned int numNewParticles(FrameType& sourceFrame, int localIdx)
+    DINLINE unsigned int numNewParticles(FrameType& sourceFrame, int localIdx, const DataSpace<simDim>& blockCell)
     {
+        this->cachedFieldE.allocateNow();
+        this->cachedFieldB.allocateNow();
+
+        const PMacc::math::Int<simDim> lowerMargin = LowerMargin::toRT();
+
+        using namespace lambda;
+        DECLARE_PLACEHOLDERS(); // declares _1, _2, _3, ... in device code
+
+        /// fill shared memory with global field data /
+        algorithm::cudaBlock::Foreach<MappingDesc::SuperCellSize> foreach(localIdx);
+        foreach(
+            CachedBufferE::Zone(), /// super cell size + margins /
+            this->cachedFieldE.origin(),
+            this->globalFieldE(blockCell - lowerMargin),
+            _1 = _2);
+
+        foreach(
+            CachedBufferB::Zone(), /// super cell size + margins /
+            this->cachedFieldB.origin(),
+            this->globalFieldB(blockCell - lowerMargin),
+            _1 = _2);
+
+        __syncthreads();
+
+        const bool isParticle = sourceFrame[localIdx][multiMask_];
+        __syncthreads();
+        if(!isParticle) return 0;
+
         using namespace PMacc::algorithms;
 
         PMACC_AUTO(particle, sourceFrame[localIdx]);
@@ -222,11 +235,11 @@ public:
         /* interpolation of E- */
         const fieldSolver::numericalCellType::traits::FieldPosition<FieldE> fieldPosE;
         fieldE = Field2ParticleInterpolation()
-            (cachedE.shift(localCell).toCursor(), pos, fieldPosE());
+            (this->cachedFieldE.origin()(lowerMargin+localCell), pos, fieldPosE());
         /*                     and B-field on the particle position */
         const fieldSolver::numericalCellType::traits::FieldPosition<FieldB> fieldPosB;
         fieldB = Field2ParticleInterpolation()
-            (cachedB.shift(localCell).toCursor(), pos, fieldPosB());
+            (this->cachedFieldB.origin()(lowerMargin+localCell), pos, fieldPosB());
 
         const float3_X mom = particle[momentum_] / particle[weighting_];
         const float_X mom2 = math::dot(mom, mom);

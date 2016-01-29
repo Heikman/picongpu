@@ -23,7 +23,7 @@
 #pragma once
 
 #include "CartBuffer.hpp"
-#include "../allocator/compile-time/SharedMemAllocator.hpp"
+#include "../allocator/compile-time/LazySharedMemAllocator.hpp"
 
 namespace PMacc
 {
@@ -39,7 +39,7 @@ namespace CT
 template<typename Type, typename Size, int uid = 0>
 struct SharedBuffer
  : public CT::CartBuffer<Type, Size,
-                         allocator::CT::SharedMemAllocator<Type, Size, Size::dim, uid>, void, void>
+                         allocator::CT::LazySharedMemAllocator<Type, Size, Size::dim, uid>, void, void>
 {};
 
 } // CT
