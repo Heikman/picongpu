@@ -36,11 +36,11 @@ namespace CT
  * you actually use the shared memory buffer. Otherwise the program freezes.
  *
  */
-template<typename Type, typename Size, int dim = Size::dim, int uid = 0>
+template<typename Type, typename Size, typename Buf, int dim = Size::dim, int uid = 0>
 struct LazySharedMemAllocator;
 
-template<typename Type, typename Size, int uid>
-struct LazySharedMemAllocator<Type, Size, 1, uid>
+template<typename Type, typename Size, typename Buf, int uid>
+struct LazySharedMemAllocator<Type, Size, Buf, 1, uid>
 {
     typedef Type type;
     typedef math::CT::UInt32<> Pitch;
@@ -68,8 +68,8 @@ public:
     }
 };
 
-template<typename Type, typename Size, int uid>
-struct LazySharedMemAllocator<Type, Size, 2, uid>
+template<typename Type, typename Size, typename Buf, int uid>
+struct LazySharedMemAllocator<Type, Size, Buf, 2, uid>
 {
     typedef Type type;
     typedef math::CT::UInt32<sizeof(Type) * Size::x::value> Pitch;
@@ -97,8 +97,8 @@ public:
     }
 };
 
-template<typename Type, typename Size, int uid>
-struct LazySharedMemAllocator<Type, Size, 3, uid>
+template<typename Type, typename Size, typename Buf, int uid>
+struct LazySharedMemAllocator<Type, Size, Buf, 3, uid>
 {
     typedef Type type;
     typedef math::CT::UInt32<sizeof(Type) * Size::x::value,
@@ -109,22 +109,24 @@ struct LazySharedMemAllocator<Type, Size, 3, uid>
 protected:
     PMACC_ALIGN(cursor, Cursor);
 
-    HDINLINE LazySharedMemAllocator() : cursor(NULL) {}
+    HDINLINE LazySharedMemAllocator(Cursor cursor = Cursor(NULL)) : cursor(cursor) {}
+    HDINLINE LazySharedMemAllocator(Type* dataPointer) : cursor(dataPointer) {}
 
+public:
     /* has to be static, unless a crash is acceptable */
-    DINLINE static Cursor _allocate()
+    DINLINE static LazySharedMemAllocator __allocate__()
     {
         __shared__ Type shMem[Size::x::value][Size::y::value][Size::z::value];
-        return Cursor((Type*)shMem);
+        return LazySharedMemAllocator(Cursor((Type*)shMem));
     }
 
     HDINLINE void allocate() {}
 
-public:
-    DINLINE Cursor allocateNow()
+/*
+    DINLINE Buf allocateNow()
     {
         return _allocate();
-    }
+    }*/
 };
 
 } // CT

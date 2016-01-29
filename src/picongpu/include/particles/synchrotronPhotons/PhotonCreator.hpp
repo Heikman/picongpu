@@ -138,6 +138,29 @@ public:
      */
     DINLINE void init(const DataSpace<simDim>& blockCell, const int& linearThreadIdx, const DataSpace<simDim>& localCellOffset)
     {
+        this->cachedFieldE = CachedBufferE::test();
+        this->cachedFieldB = CachedBufferB::test();
+
+        const PMacc::math::Int<simDim> lowerMargin = LowerMargin::toRT();
+
+        using namespace lambda;
+        DECLARE_PLACEHOLDERS(); // declares _1, _2, _3, ... in device code
+
+        /// fill shared memory with global field data /
+        algorithm::cudaBlock::Foreach<MappingDesc::SuperCellSize> foreach(linearThreadIdx);
+        foreach(
+            CachedBufferE::Zone(), /// super cell size + margins /
+            this->cachedFieldE.origin(),
+            this->globalFieldE(blockCell - lowerMargin),
+            _1 = _2);
+
+        foreach(
+            CachedBufferB::Zone(), /// super cell size + margins /
+            this->cachedFieldB.origin(),
+            this->globalFieldB(blockCell - lowerMargin),
+            _1 = _2);
+
+        __syncthreads();
 
         /* initialize random number generator with the local cell index in the simulation*/
         this->randomGen.init(localCellOffset);
@@ -192,29 +215,7 @@ public:
      */
     DINLINE unsigned int numNewParticles(FrameType& sourceFrame, int localIdx, const DataSpace<simDim>& blockCell)
     {
-        this->cachedFieldE.allocateNow();
-        this->cachedFieldB.allocateNow();
-
         const PMacc::math::Int<simDim> lowerMargin = LowerMargin::toRT();
-
-        using namespace lambda;
-        DECLARE_PLACEHOLDERS(); // declares _1, _2, _3, ... in device code
-
-        /// fill shared memory with global field data /
-        algorithm::cudaBlock::Foreach<MappingDesc::SuperCellSize> foreach(localIdx);
-        foreach(
-            CachedBufferE::Zone(), /// super cell size + margins /
-            this->cachedFieldE.origin(),
-            this->globalFieldE(blockCell - lowerMargin),
-            _1 = _2);
-
-        foreach(
-            CachedBufferB::Zone(), /// super cell size + margins /
-            this->cachedFieldB.origin(),
-            this->globalFieldB(blockCell - lowerMargin),
-            _1 = _2);
-
-        __syncthreads();
 
         const bool isParticle = sourceFrame[localIdx][multiMask_];
         __syncthreads();
@@ -238,8 +239,9 @@ public:
             (this->cachedFieldE.origin()(lowerMargin+localCell), pos, fieldPosE());
         /*                     and B-field on the particle position */
         const fieldSolver::numericalCellType::traits::FieldPosition<FieldB> fieldPosB;
-        fieldB = Field2ParticleInterpolation()
-            (this->cachedFieldB.origin()(lowerMargin+localCell), pos, fieldPosB());
+        fieldB = fieldE;
+        //fieldB = Field2ParticleInterpolation()
+        //    (this->cachedFieldB.origin()(lowerMargin+localCell), pos, fieldPosB());
 
         const float3_X mom = particle[momentum_] / particle[weighting_];
         const float_X mom2 = math::dot(mom, mom);

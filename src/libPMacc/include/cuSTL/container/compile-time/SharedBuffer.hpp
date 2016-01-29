@@ -38,9 +38,36 @@ namespace CT
  */
 template<typename Type, typename Size, int uid = 0>
 struct SharedBuffer
- : public CT::CartBuffer<Type, Size,
-                         allocator::CT::LazySharedMemAllocator<Type, Size, Size::dim, uid>, void, void>
-{};
+ : public CT::CartBuffer<Type,
+                         Size,
+                         allocator::CT::LazySharedMemAllocator<Type,
+                                                               Size,
+                                                               SharedBuffer<Type, Size, uid>,
+                                                               Size::dim,
+                                                               uid>,
+                         void,
+                         void>
+{
+    typedef CT::CartBuffer<Type,
+                         Size,
+                         allocator::CT::LazySharedMemAllocator<Type,
+                                                               Size,
+                                                               SharedBuffer<Type, Size, uid>,
+                                                               Size::dim,
+                                                               uid>,
+                         void,
+                         void> Base;
+
+    HDINLINE SharedBuffer() {}
+    HDINLINE SharedBuffer(const typename Base::Allocator& allocator) : Base(allocator) {}
+    HDINLINE SharedBuffer(Type* dataPointer) : Base(dataPointer) {}
+
+    DINLINE static SharedBuffer test()
+    {
+        __shared__ Type shMem[Size::x::value][Size::y::value][Size::z::value];
+        return SharedBuffer((Type*)shMem);
+    }
+};
 
 } // CT
 } // container

@@ -39,12 +39,13 @@ namespace CT
 /** compile-time version of container::CartBuffer
  * \tparam _Size compile-time vector specifying the size of the container
  */
-template<typename Type, typename _Size, typename Allocator, typename Copier, typename Assigner>
-class CartBuffer : public Allocator
+template<typename Type, typename _Size, typename T_Allocator, typename Copier, typename Assigner>
+class CartBuffer : public T_Allocator
 {
 public:
     typedef Type type;
     typedef _Size Size;
+    typedef T_Allocator Allocator;
     typedef typename Allocator::Pitch Pitch;
     typedef typename Allocator::Cursor Cursor;
     BOOST_STATIC_CONSTEXPR int dim = Size::dim;
@@ -52,9 +53,8 @@ public:
 
 public:
     HDINLINE CartBuffer();
-
-    DINLINE CT::CartBuffer<Type, Size, Allocator, Copier, Assigner>&
-    operator=(const CT::CartBuffer<Type, Size, Allocator, Copier, Assigner>& rhs);
+    HDINLINE CartBuffer(const Allocator& allocator) : Allocator(allocator) {}
+    HDINLINE CartBuffer(Type* dataPointer) : Allocator(dataPointer) {}
 
     DINLINE void assign(const Type& value);
     DINLINE Type* getDataPointer() const {return &(*this->cursor);}
